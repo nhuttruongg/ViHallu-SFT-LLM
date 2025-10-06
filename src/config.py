@@ -28,13 +28,10 @@ def _getenv_bool(key: str, default: bool) -> bool:
 
 @dataclass
 class Config:
-
     model_id: str = os.getenv("MODEL_ID", "vilm/vinallama-7b")
     tokenizer_id: str = os.getenv("TOKENIZER_ID", "")
-
     train_csv: str = os.getenv("TRAIN_CSV", "data/vihallu-train.csv")
     test_csv: str = os.getenv("TEST_CSV", "data/vihallu-public-test.csv")
-
     id_column: str = os.getenv("ID_COLUMN", "id")
     context_column: str = os.getenv("CONTEXT_COLUMN", "context")
     prompt_column: str = os.getenv("PROMPT_COLUMN", "prompt")
@@ -45,6 +42,7 @@ class Config:
 
     num_labels: int = _getenv_int("NUM_LABELS", 3)
     max_length: int = _getenv_int("MAX_LEN", 1024)
+
     k_sentences: int = _getenv_int("K_SENTENCES", 10)
     use_prompt_type_tag: bool = _getenv_bool("USE_PROMPT_TYPE_TAG", True)
     use_keyword_extraction: bool = _getenv_bool("USE_KEYWORD_EXTRACTION", True)
@@ -60,7 +58,7 @@ class Config:
     warmup_ratio: float = _getenv_float("WARMUP_RATIO", 0.05)
 
     lora_r: int = _getenv_int("LORA_R", 32)
-    lora_alpha: int = _getenv_int("LORA_ALPHA", 64)
+    lora_alpha: int = _getenv_int("LORA_ALPHA", 64)  #
     lora_dropout: float = _getenv_float("LORA_DROPOUT", 0.05)
 
     valid_size: float = _getenv_float("VALID_SIZE", 0.15)

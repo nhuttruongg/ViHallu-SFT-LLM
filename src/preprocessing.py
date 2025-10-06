@@ -11,12 +11,11 @@ from collections import Counter
 from typing import List, Tuple, Optional
 
 
-# ====== Text Normalization ======
 _ZW = re.compile(r'[\u200B-\u200D\uFEFF]')
 _MULTI_PUNC = re.compile(r'([!?.,;:])\1{2,}')
 _MULTI_WS = re.compile(r'\s+')
 _WORD = re.compile(r"\w+", flags=re.UNICODE)
-_SENT_SPLIT = re.compile(r'(?<=[\.!\?…])\s+|\n+')
+_SENT_SPLIT = re.compile(r'(?<=[\.!\?â€¦])\s+|\n+')
 
 
 def normalize_light_vi(s: str) -> str:
@@ -28,7 +27,6 @@ def normalize_light_vi(s: str) -> str:
     return s
 
 
-# ====== TF-IDF Utilities ======
 def _tf(text: str) -> Counter:
     """Term frequency counter"""
     tokens = _WORD.findall(text.lower())
@@ -51,7 +49,6 @@ def _sent_split(text: str) -> List[str]:
     return [s.strip() for s in sents if s and len(s.strip()) > 10]
 
 
-# ====== Sentence Selection with MMR ======
 def select_sentences_mmr(
     context: str,
     query: str,
@@ -74,7 +71,6 @@ def select_sentences_mmr(
 
     selected_idx = []
     remaining_idx = list(range(len(sents)))
-
     first_idx = max(remaining_idx, key=lambda i: relevance[i])
     selected_idx.append(first_idx)
     remaining_idx.remove(first_idx)
@@ -83,7 +79,6 @@ def select_sentences_mmr(
         mmr_scores = []
         for i in remaining_idx:
             rel_score = relevance[i]
-
             max_sim = max(
                 _cosine_sim(sent_tfs[i], sent_tfs[j])
                 for j in selected_idx
@@ -102,6 +97,7 @@ def select_sentences_mmr(
 def extract_keywords(text: str, top_k: int = 5) -> List[str]:
     """Extract top-k keywords from text using simple TF scoring"""
     tf = _tf(text)
+
     stopwords = {"của", "và", "là", "có", "được", "trong", "cho", "từ",
                  "với", "này", "đó", "các", "những", "để", "một", "không"}
     filtered = {w: c for w, c in tf.items() if len(w) >
@@ -147,7 +143,6 @@ def build_text(
     [QUESTION] (with optional type tag)
     [RESPONSE]
     """
-
     context = normalize_light_vi(context)
     prompt = normalize_light_vi(prompt)
     response = normalize_light_vi(response)

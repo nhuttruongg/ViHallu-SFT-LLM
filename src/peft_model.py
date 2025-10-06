@@ -19,7 +19,6 @@ from sklearn.utils.class_weight import compute_class_weight
 from src.config import Config
 from src.preprocessing import build_text, normalize_light_vi
 
-
 LABEL2ID = {"no": 0, "intrinsic": 1, "extrinsic": 2}
 ID2LABEL = {v: k for k, v in LABEL2ID.items()}
 
@@ -36,33 +35,30 @@ def to_label_id_robust(x):
     if s.isdigit():
         i = int(s)
         return i if i in ID2LABEL else None
+
     aliases = {
         "no": 0, "none": 0, "non-hallucination": 0, "không": 0,
-        "intrinsic": 1, "internal": 1, "nội tại": 1, "intrinsic hallucination": 1,
-        "extrinsic": 2, "external": 2, "ngoại tại": 2, "extrinsic hallucination": 2,
+        "intrinsic": 1, "internal": 1, "ná»™i táº¡i": 1, "intrinsic hallucination": 1,
+        "extrinsic": 2, "external": 2, "ngoáº¡i táº¡i": 2, "extrinsic hallucination": 2,
     }
     return aliases.get(s, LABEL2ID.get(s))
 
 
-# ====== Dataset Preparation ======
 def ensure_text_column(df: pd.DataFrame, C: Config) -> pd.DataFrame:
     """Ensure text column exists with proper preprocessing"""
     df = df.copy()
 
-    # Normalize required columns
     for col in [C.context_column, C.prompt_column, C.response_column]:
         if col not in df.columns:
             df[col] = ""
         df[col] = df[col].astype(str).fillna("").apply(normalize_light_vi)
 
-    # Get prompt_type if available
     prompt_type_col = getattr(C, 'prompt_type_column', None)
     if prompt_type_col and prompt_type_col in df.columns:
         df[prompt_type_col] = df[prompt_type_col].fillna("")
     else:
         df[prompt_type_col] = None
 
-    # Build text column if not exists
     if C.text_column not in df.columns:
         print(
             f"[peft_model] Building text column with k_sent={C.k_sentences}...")
@@ -86,16 +82,12 @@ def ensure_text_column(df: pd.DataFrame, C: Config) -> pd.DataFrame:
 def build_datasets(train_df: pd.DataFrame, val_df: pd.DataFrame, C: Config):
     """Build HuggingFace datasets with proper tokenization"""
 
-    # Prepare text columns
     train_df = ensure_text_column(train_df, C)
     val_df = ensure_text_column(val_df, C)
-
-    # Check label column
     if C.label_column not in train_df.columns:
         raise ValueError(
             f"Missing label column '{C.label_column}' in train_df")
 
-    # Map labels
     print("\n[peft_model] Label distribution (train - raw):")
     print(train_df[C.label_column].value_counts(dropna=False))
     print("\n[peft_model] Label distribution (val - raw):")
@@ -109,7 +101,6 @@ def build_datasets(train_df: pd.DataFrame, val_df: pd.DataFrame, C: Config):
     print("\n[peft_model] Label distribution (val - mapped):")
     print(val_df["labels"].value_counts(dropna=False))
 
-    # Drop invalid labels
     before_train, before_val = len(train_df), len(val_df)
     train_df = train_df.dropna(subset=["labels"]).reset_index(drop=True)
     val_df = val_df.dropna(subset=["labels"]).reset_index(drop=True)
@@ -123,7 +114,6 @@ def build_datasets(train_df: pd.DataFrame, val_df: pd.DataFrame, C: Config):
             f"Empty dataset after label mapping: train={after_train}, val={after_val}"
         )
 
-    # Compute class weights for imbalanced data
     if C.use_class_weights:
         class_weights = compute_class_weight(
             'balanced',
@@ -133,7 +123,6 @@ def build_datasets(train_df: pd.DataFrame, val_df: pd.DataFrame, C: Config):
         C.class_weights = class_weights.tolist()
         print(f"\n[peft_model] Class weights: {C.class_weights}")
 
-    # Load tokenizer
     tok = AutoTokenizer.from_pretrained(
         C.effective_tokenizer_id,
         use_fast=True,
@@ -142,7 +131,6 @@ def build_datasets(train_df: pd.DataFrame, val_df: pd.DataFrame, C: Config):
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
 
-    # Tokenization function
     def tokenize_function(batch):
         return tok(
             batch[C.text_column],
@@ -167,7 +155,6 @@ def build_datasets(train_df: pd.DataFrame, val_df: pd.DataFrame, C: Config):
     return tok, train_ds, val_ds
 
 
-# ====== Custom Trainer with Class Weights ======
 class WeightedLossTrainer(Trainer):
     """Trainer with class-weighted loss"""
 
@@ -181,7 +168,6 @@ class WeightedLossTrainer(Trainer):
         outputs = model(**inputs)
         logits = outputs.get("logits")
 
-        # Apply class weights and label smoothing
         if self.class_weights is not None:
             weight = torch.tensor(self.class_weights,
                                   dtype=logits.dtype, device=logits.device)
@@ -197,13 +183,11 @@ class WeightedLossTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 
-# ====== Model Trainer Setup ======
 def get_trainer(train_ds, val_ds, tok, C: Config):
     """Setup QLoRA trainer with optimized settings"""
 
     print(f"\n[peft_model] Loading base model: {C.model_id}")
 
-    # Model config
     cfg = AutoConfig.from_pretrained(
         C.model_id,
         num_labels=C.num_labels,
@@ -212,7 +196,6 @@ def get_trainer(train_ds, val_ds, tok, C: Config):
         trust_remote_code=True,
     )
 
-    # 4-bit quantization config
     bnb_cfg = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
@@ -220,7 +203,6 @@ def get_trainer(train_ds, val_ds, tok, C: Config):
         bnb_4bit_compute_dtype=torch.bfloat16 if C.bf16 else torch.float16,
     )
 
-    # Load base model
     model = AutoModelForSequenceClassification.from_pretrained(
         C.model_id,
         config=cfg,
@@ -231,18 +213,16 @@ def get_trainer(train_ds, val_ds, tok, C: Config):
         torch_dtype=torch.bfloat16 if C.bf16 else torch.float16,
     )
 
-    # Prepare for k-bit training
     if C.gradient_checkpointing:
         model.gradient_checkpointing_enable()
     model = prepare_model_for_kbit_training(model)
 
-    # LoRA config -
     lora_cfg = LoraConfig(
         r=C.lora_r,
         lora_alpha=C.lora_alpha,
         target_modules=[
-            "q_proj", "k_proj", "v_proj", "o_proj",  # Attention
-            "gate_proj", "up_proj", "down_proj",      # FFN
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
         ],
         lora_dropout=C.lora_dropout,
         bias="none",

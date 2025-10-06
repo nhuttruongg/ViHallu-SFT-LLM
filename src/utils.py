@@ -11,7 +11,6 @@ from sklearn.metrics import (
 import json
 
 
-# ====== Data Analysis ======
 def analyze_dataset(df: pd.DataFrame, label_col: str = "label") -> Dict:
     """
     Comprehensive dataset analysis
@@ -31,12 +30,10 @@ def analyze_dataset(df: pd.DataFrame, label_col: str = "label") -> Dict:
         "quality_issues": [],
     }
 
-    # Label distribution
     if label_col in df.columns:
         label_counts = df[label_col].value_counts().to_dict()
         stats["label_distribution"] = label_counts
 
-        # Check for imbalance
         max_count = max(label_counts.values())
         min_count = min(label_counts.values())
         imbalance_ratio = max_count / \
@@ -47,7 +44,6 @@ def analyze_dataset(df: pd.DataFrame, label_col: str = "label") -> Dict:
                 f"Class imbalance detected: ratio {imbalance_ratio:.2f}:1"
             )
 
-    # Text length analysis
     for col in ["context", "prompt", "response"]:
         if col in df.columns:
             lengths = df[col].astype(str).str.len()
@@ -59,7 +55,6 @@ def analyze_dataset(df: pd.DataFrame, label_col: str = "label") -> Dict:
                 "std": float(lengths.std()),
             }
 
-            # Check for very short or very long texts
             if lengths.min() < 10:
                 stats["quality_issues"].append(
                     f"{col}: Has very short texts (min={lengths.min()})"
@@ -69,7 +64,6 @@ def analyze_dataset(df: pd.DataFrame, label_col: str = "label") -> Dict:
                     f"{col}: Has very long texts (max={lengths.max()})"
                 )
 
-    # Missing values
     for col in df.columns:
         null_count = df[col].isnull().sum()
         if null_count > 0:
@@ -112,14 +106,13 @@ def print_dataset_analysis(stats: Dict):
             print(f"  {col}: {count}")
 
     if stats['quality_issues']:
-        print("\n⚠️  Quality Issues:")
+        print("\nâš ï¸  Quality Issues:")
         for issue in stats['quality_issues']:
             print(f"  - {issue}")
 
     print("="*70 + "\n")
 
 
-# ====== Advanced Metrics ======
 def compute_per_class_metrics(y_true, y_pred, labels=None) -> pd.DataFrame:
     """
     Compute detailed per-class metrics
@@ -142,7 +135,6 @@ def compute_per_class_metrics(y_true, y_pred, labels=None) -> pd.DataFrame:
         'support': support,
     })
 
-    # Add accuracy per class
     cm = confusion_matrix(y_true, y_pred, labels=labels)
     accuracies = []
     for i, label in enumerate(labels):
@@ -180,7 +172,6 @@ def analyze_errors(
         "examples": {},
     }
 
-    # Find all confusion pairs
     for i in range(len(true_labels)):
         if true_labels[i] != pred_labels[i]:
             pair = f"{true_labels[i]} -> {pred_labels[i]}"
@@ -190,8 +181,6 @@ def analyze_errors(
                 errors["examples"][pair] = []
 
             errors["confusion_pairs"][pair] += 1
-
-            # Store example if under limit
             if len(errors["examples"][pair]) < max_examples:
                 example = {
                     "id": df.iloc[i][id_col] if id_col in df.columns else i,
@@ -231,7 +220,6 @@ def print_error_analysis(errors: Dict, label_names: List[str] = None):
         for pair, count in sorted_pairs[:10]:
             print(f"  {pair}: {count}")
 
-        # Show examples for top confusion
         top_pair = sorted_pairs[0][0]
         if top_pair in errors['examples']:
             print(f"\nExample errors for '{top_pair}':")
@@ -245,7 +233,6 @@ def print_error_analysis(errors: Dict, label_names: List[str] = None):
     print("="*70 + "\n")
 
 
-# ====== Confidence Analysis ======
 def analyze_prediction_confidence(logits: np.ndarray, threshold: float = 0.8) -> Dict:
     """
     Analyze model confidence in predictions
@@ -257,7 +244,6 @@ def analyze_prediction_confidence(logits: np.ndarray, threshold: float = 0.8) ->
     Returns statistics about prediction confidence
     """
 
-    # Convert to probabilities
     probs = np.exp(logits) / np.exp(logits).sum(axis=1, keepdims=True)
     max_probs = probs.max(axis=1)
 
@@ -271,7 +257,6 @@ def analyze_prediction_confidence(logits: np.ndarray, threshold: float = 0.8) ->
         "low_confidence_count": int((max_probs < 0.5).sum()),
     }
 
-    # Confidence bins
     bins = [0, 0.5, 0.7, 0.8, 0.9, 1.0]
     hist, _ = np.histogram(max_probs, bins=bins)
     stats["confidence_distribution"] = {
@@ -282,7 +267,6 @@ def analyze_prediction_confidence(logits: np.ndarray, threshold: float = 0.8) ->
     return stats
 
 
-# ====== Save Results ======
 def save_evaluation_results(
     output_dir: str,
     metrics: Dict,
@@ -305,11 +289,8 @@ def save_evaluation_results(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Save metrics
     with open(output_path / "metrics.json", 'w') as f:
         json.dump(metrics, f, indent=2)
-
-    # Save predictions
     if ids is not None:
         pred_df = pd.DataFrame({
             'id': ids,
@@ -321,7 +302,6 @@ def save_evaluation_results(
 
         pred_df.to_csv(output_path / "predictions.csv", index=False)
 
-    # Save confusion matrix if true labels available
     if true_labels is not None:
         cm = confusion_matrix(true_labels, predictions)
 
@@ -333,4 +313,4 @@ def save_evaluation_results(
             f.write("="*50 + "\n\n")
             f.write(classification_report(true_labels, predictions))
 
-    print(f"\n✅ Evaluation results saved to: {output_path}")
+    print(f"\nâœ… Evaluation results saved to: {output_path}")

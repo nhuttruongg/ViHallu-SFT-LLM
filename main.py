@@ -116,7 +116,6 @@ def prepare_data_splits(df: pd.DataFrame, C: Config):
         C.id_column, C.context_column, C.prompt_column,
         C.response_column, C.label_column
     ]
-
     if hasattr(C, 'prompt_type_column') and C.prompt_type_column in df.columns:
         select_cols.append(C.prompt_type_column)
 
@@ -160,7 +159,7 @@ def save_predictions_csv(output_path: str, ids, pred_ids, id2label):
     })
 
     submission.to_csv(output_path, index=False, encoding="utf-8")
-    print(f"\n✅ Predictions saved to: {output_path}")
+    print(f"\nâœ… Predictions saved to: {output_path}")
 
     print("\nPrediction distribution:")
     dist = submission["predict_label"].value_counts()
@@ -192,7 +191,6 @@ def main():
     print(f"Loaded {len(df)} samples")
 
     train_df, val_df = prepare_data_splits(df, C)
-
     print("\n[main] Building HuggingFace datasets...")
     tok, train_ds, val_ds = build_datasets(train_df, val_df, C)
 
@@ -229,7 +227,7 @@ def main():
     with open(f"{C.output_dir}/train_info.json", 'w') as f:
         json.dump(train_info, f, indent=2)
 
-    print(f" Model and tokenizer saved to: {C.output_dir}")
+    print(f"âœ… Model and tokenizer saved to: {C.output_dir}")
 
     print("\n" + "="*70)
     print("FINAL VALIDATION EVALUATION")
@@ -253,7 +251,7 @@ def main():
     print("="*70 + "\n")
 
     if not os.path.exists(C.test_csv):
-        print(f" Test file not found: {C.test_csv}")
+        print(f"Test file not found: {C.test_csv}")
         print("Skipping test inference.")
     else:
         print(f"Loading test data from: {C.test_csv}")
@@ -292,14 +290,14 @@ def main():
         print("Running inference...")
         test_predictions = trainer.predict(test_inf_ds)
         test_logits = test_predictions.predictions
-
         if test_logits.ndim == 2:
             test_pred_ids = test_logits.argmax(axis=1)
         else:
-
+            # Binary case fallback
             test_pred_ids = (
                 1 / (1 + np.exp(-test_logits.reshape(-1))) >= 0.5).astype(int)
 
+        # Save predictions
         output_path = "preds_test.csv"
         save_predictions_csv(
             output_path,
@@ -308,6 +306,7 @@ def main():
             ID2LABEL
         )
 
+        # Also save to output dir
         save_predictions_csv(
             f"{C.output_dir}/preds_test.csv",
             test_df[C.id_column].values,
