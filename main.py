@@ -298,17 +298,9 @@ def main():
                 1 / (1 + np.exp(-test_logits.reshape(-1))) >= 0.5).astype(int)
 
         # Save predictions
-        output_path = "preds_test.csv"
+        output_path = f"{C.output_dir}/preds_test.csv"
         save_predictions_csv(
             output_path,
-            test_df[C.id_column].values,
-            test_pred_ids,
-            ID2LABEL
-        )
-
-        # Also save to output dir
-        save_predictions_csv(
-            f"{C.output_dir}/preds_test.csv",
             test_df[C.id_column].values,
             test_pred_ids,
             ID2LABEL
