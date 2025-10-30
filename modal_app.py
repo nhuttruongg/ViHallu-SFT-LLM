@@ -202,7 +202,7 @@ from transformers import (
     BitsAndBytesConfig, TrainingArguments, Trainer, DataCollatorWithPadding,
     EarlyStoppingCallback
 )
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType, PeftModel, PeftConfig
 
 LABEL2ID = {"no": 0, "intrinsic": 1, "extrinsic": 2}
 ID2LABEL = {v: k for k, v in LABEL2ID.items()}
@@ -376,14 +376,27 @@ image = (
     Image.from_registry("nvidia/cuda:12.1.1-devel-ubuntu22.04", add_python="3.10")
     .apt_install("git")
     .pip_install(
-        "torch==2.6.0", "torchvision==0.21.0", "torchaudio==2.6.0", index_url="https://download.pytorch.org/whl/cu121",
+        "torch", "torchvision", "torchaudio", index_url="https://download.pytorch.org/whl/cu121",
     )
     .pip_install(
         "transformers==4.43.3", "accelerate==0.30.1", "peft==0.11.1", "bitsandbytes==0.43.1",
-        "datasets==2.19.1", "tokenizers==0.15.0", "numpy==1.25.2", "pandas==2.0.3", "scikit-learn==1.3.0",
+        "datasets==2.19.1", "tokenizers==0.19.1", "numpy==1.25.2", "pandas==2.0.3", "scikit-learn==1.3.0",
         "tqdm==4.66.1", "sentencepiece==0.1.99", "protobuf==3.20.3", "safetensors", "huggingface_hub",
     )
 )
+
+@app.local_entrypoint()
+def upload_checkpoint():
+    volume = ARTIFACT_VOLUME
+    checkpoint_dir = "./checkpoint"
+    with volume.batch_upload() as batch:
+        for file in os.listdir(checkpoint_dir):
+            local_path = os.path.join(checkpoint_dir, file)
+            remote_path = f"/outputs/finetuned-model/{file}"
+            if os.path.isfile(local_path):
+                batch.put_file(local_path, remote_path)
+                print(f"Uploaded {local_path} to {remote_path}")
+    print("Finished uploading checkpoint files.")
 
 @app.local_entrypoint()
 def upload_dataset():
@@ -434,9 +447,31 @@ def predict():
     C.output_dir = "/outputs/finetuned-model"
     C.test_csv = "/data/vihallu-public-test.csv"
 
-    model = AutoModelForSequenceClassification.from_pretrained(C.output_dir)
+    # Load the PEFT config
+    peft_config = PeftConfig.from_pretrained(C.output_dir)
+
+    # Load the base model
+    cfg = AutoConfig.from_pretrained(peft_config.base_model_name_or_path, num_labels=C.num_labels, id2label=ID2LABEL, label2id=LABEL2ID, trust_remote_code=True)
+    bnb_cfg = BitsAndBytesConfig(
+        load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
+        bnb_4bit_compute_dtype=torch.bfloat16 if C.bf16 else torch.float16,
+    )
+    base_model = AutoModelForSequenceClassification.from_pretrained(
+        peft_config.base_model_name_or_path,
+        config=cfg,
+        quantization_config=bnb_cfg,
+        trust_remote_code=True,
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        torch_dtype=torch.bfloat16 if C.bf16 else torch.float16,
+    )
+
+    # Load the PEFT adapter on top of the base model
+    model = PeftModel.from_pretrained(base_model, C.output_dir)
+    model.eval() # Set to eval mode
     tok = AutoTokenizer.from_pretrained(C.output_dir)
-    trainer = Trainer(model=model)
+    data_collator = DataCollatorWithPadding(tokenizer=tok, padding=True)
+    trainer = Trainer(model=model, data_collator=data_collator)
     test_df = pd.read_csv(C.test_csv)
     
     test_df = ensure_text_column(test_df, C)
@@ -461,3 +496,19 @@ def download():
                 f.write(ARTIFACT_VOLUME.read_file(entry.path))
             print(f"Downloaded {entry.path}")
     print("Download complete.")
+
+@app.function(
+    image=image,
+    volumes={"/outputs": ARTIFACT_VOLUME},
+)
+def clear_outputs():
+    import os
+    import shutil
+    output_dir = "/outputs"
+    for item in os.listdir(output_dir):
+        item_path = os.path.join(output_dir, item)
+        if os.path.isfile(item_path) or os.path.islink(item_path):
+            os.unlink(item_path)
+        elif os.path.isdir(item_path):
+            shutil.rmtree(item_path)
+    print("Cleared the /outputs directory.")
