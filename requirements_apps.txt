@@ -1,0 +1,16 @@
+transformers==4.43.3
+accelerate==0.30.1
+peft==0.11.1
+bitsandbytes==0.43.1
+tokenizers
+numpy
+sentencepiece
+protobuf==3.20.3
+safetensors
+fastapi==0.109.0
+pydantic==2.12.0
+modal
+torch
+torchvision
+torchaudio
+streamlit
