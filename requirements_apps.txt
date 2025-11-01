@@ -1,16 +1,54 @@
-transformers==4.43.3
-accelerate==0.30.1
-peft==0.11.1
-bitsandbytes==0.43.1
-tokenizers
-numpy
-sentencepiece
-protobuf==3.20.3
-safetensors
-fastapi==0.109.0
-pydantic==2.12.0
-modal
-torch
-torchvision
-torchaudio
-streamlit
+# Vietnamese Hallucination Detection Apps - Requirements
+# Install all: pip install -r requirements_apps.txt
+# Or install individually based on what you need
+
+# ============================================================================
+# CORE (Required for all apps)
+# ============================================================================
+requests==2.31.0
+pydantic==2.5.3
+
+# ============================================================================
+# STREAMLIT APP
+# ============================================================================
+streamlit==1.29.0
+pandas==2.0.3
+
+# ============================================================================
+# GRADIO APP
+# ============================================================================
+gradio==4.10.0
+
+# ============================================================================
+# PYTHON CLIENT (No additional requirements beyond core)
+# ============================================================================
+# Already covered by requests and pydantic
+
+# ============================================================================
+# DEVELOPMENT & TESTING
+# ============================================================================
+pytest==7.4.3
+pytest-cov==4.1.0
+black==23.12.1
+flake8==6.1.0
+mypy==1.7.1
+
+# ============================================================================
+# OPTIONAL: Enhanced Features
+# ============================================================================
+# Analytics
+sqlalchemy==2.0.23
+psycopg2-binary==2.9.9
+
+# Logging
+python-json-logger==2.0.7
+
+# Rate limiting (for custom deployments)
+# fastapi-limiter==0.1.5
+# redis==5.0.1
+
+# Environment variables
+python-dotenv==1.0.0
+
+# HTTP client with retry
+httpx==0.25.2

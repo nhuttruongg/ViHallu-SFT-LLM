@@ -6,17 +6,15 @@ from __future__ import annotations
 import os
 import json
 import time
-from typing import Dict, Optional
+from typing import Dict, Optional, List, Tuple
 from dataclasses import dataclass
 import re
 import math
 import unicodedata
 from collections import Counter
 
-import numpy as np
-import torch
+import modal
 from modal import App, Image, Volume, Secret, asgi_app, method, web_endpoint, enter
-
 # ==============================================================================
 # PREPROCESSING UTILITIES (copied from src/preprocessing.py)
 # ==============================================================================
@@ -49,66 +47,187 @@ def _sent_split(text: str):
     sents = _SENT_SPLIT.split(text.strip())
     return [s.strip() for s in sents if s and len(s.strip()) > 10]
 
-def select_sentences_mmr(context: str, query: str, k: int = 10, lambda_param: float = 0.7) -> str:
+def select_sentences_mmr(
+    context: str,
+    query: str,
+    k: int = 10,
+    lambda_param: float = 0.7
+) -> str:
+    """
+    Select top-k sentences using Maximal Marginal Relevance (MMR)
+    - Balances relevance to query with diversity
+    - lambda_param: tradeoff between relevance (1.0) and diversity (0.0)
+    """
     sents = _sent_split(context or "")
     if len(sents) <= k:
         return " ".join(sents)
+
     query_tf = _tf(query or "")
     sent_tfs = [_tf(s) for s in sents]
+
     relevance = [_cosine_sim(stf, query_tf) for stf in sent_tfs]
+
     selected_idx = []
     remaining_idx = list(range(len(sents)))
+    if not remaining_idx:
+        return ""
     first_idx = max(remaining_idx, key=lambda i: relevance[i])
     selected_idx.append(first_idx)
     remaining_idx.remove(first_idx)
+
     while len(selected_idx) < k and remaining_idx:
         mmr_scores = []
         for i in remaining_idx:
             rel_score = relevance[i]
-            max_sim = max(_cosine_sim(sent_tfs[i], sent_tfs[j]) for j in selected_idx) if selected_idx else 0
+            max_sim = max(
+                _cosine_sim(sent_tfs[i], sent_tfs[j])
+                for j in selected_idx
+            ) if selected_idx else 0
             mmr = lambda_param * rel_score - (1 - lambda_param) * max_sim
             mmr_scores.append((mmr, i))
+
         best_idx = max(mmr_scores, key=lambda x: x[0])[1]
         selected_idx.append(best_idx)
         remaining_idx.remove(best_idx)
-    selected_idx.sort()
-    return " ".join(sents[i] for i in selected_idx)
 
-def extract_keywords(text: str, top_k: int = 5):
+    selected_idx.sort()
+    result = " ".join(sents[i] for i in selected_idx)
+    return result
+
+def extract_keywords(text: str, top_k: int = 5) -> List[str]:
+    """Extract top-k keywords from text using simple TF scoring"""
     tf = _tf(text)
-    stopwords = {"của", "và", "là", "có", "được", "trong", "cho", "từ", "với", "này", "đó", "các", "những", "để", "một", "không"}
-    filtered = {w: c for w, c in tf.items() if len(w) > 2 and w not in stopwords}
+
+    stopwords = {"của", "và", "là", "có", "được", "trong", "cho", "từ",
+                 "với", "này", "đó", "các", "những", "để", "một", "không"}
+    filtered = {w: c for w, c in tf.items() if len(w) >
+                2 and w not in stopwords}
     top = sorted(filtered.items(), key=lambda x: -x[1])[:top_k]
     return [w for w, _ in top]
 
-PROMPT_TYPE_TAGS = {"factual": "<FACTUAL>", "noisy": "<NOISY>", "adversarial": "<ADVERSARIAL>"}
+
+PROMPT_TYPE_TAGS = {
+    "factual": "<FACTUAL>",
+    "noisy": "<NOISY>",
+    "adversarial": "<ADVERSARIAL>"
+}
+
 
 def add_prompt_type_tag(prompt: str, prompt_type: Optional[str]) -> str:
+    """Add special token to indicate prompt type"""
     if not prompt_type:
         return prompt
+
     pt_lower = str(prompt_type).strip().lower()
     tag = PROMPT_TYPE_TAGS.get(pt_lower, "")
     if tag:
         return f"{tag}\n{prompt}"
     return prompt
 
-def build_text(context: str, prompt: str, response: str, prompt_type: Optional[str] = None, 
-               k_sent: int = 10, use_prompt_type_tag: bool = True, use_keywords: bool = True) -> str:
+
+def build_text(
+    context: str,
+    prompt: str,
+    response: str,
+    prompt_type: Optional[str] = None,
+    k_sent: int = 10,
+    use_prompt_type_tag: bool = True,
+    use_keywords: bool = True
+) -> str:
+    """
+    Build structured input text for hallucination detection
+
+    Format:
+    [CONTEXT] (selected sentences)
+    [KEYWORDS] (optional)
+    [QUESTION] (with optional type tag)
+    [RESPONSE]
+    """
     context = normalize_light_vi(context)
     prompt = normalize_light_vi(prompt)
     response = normalize_light_vi(response)
+
     query = f"{prompt} {response}"
     selected_context = select_sentences_mmr(context, query, k=k_sent)
+
     sections = [f"[CONTEXT]\n{selected_context}"]
+
     if use_keywords:
         keywords = extract_keywords(selected_context, top_k=5)
         if keywords:
             sections.append(f"[KEYWORDS]\n{', '.join(keywords)}")
+
     if use_prompt_type_tag and prompt_type:
         prompt = add_prompt_type_tag(prompt, prompt_type)
     sections.append(f"[QUESTION]\n{prompt}")
+
     sections.append(f"[RESPONSE]\n{response}")
+
     return "\n\n".join(sections)
+
+# ======================================================================
+# WEB ENDPOINTS (created lazily when FastAPI is available)
+# ======================================================================
+try:
+    from fastapi import FastAPI, HTTPException
+    from fastapi.responses import JSONResponse
+    from pydantic import BaseModel, Field
+    HAS_FASTAPI = True
+except Exception:
+    # FastAPI/pydantic may not be installed in the local venv used by
+    # `modal deploy`. They are installed inside the runtime image; avoid
+    # failing local import by deferring endpoint creation.
+    HAS_FASTAPI = False
+    FastAPI = None
+    HTTPException = Exception
+    JSONResponse = None
+    class BaseModel:  # type: ignore - lightweight placeholder
+        pass
+    def Field(*args, **kwargs):
+        return None
+
+if HAS_FASTAPI:
+    web_app = FastAPI(
+        title="Vietnamese Hallucination Detection API",
+        description="Detect hallucinations in Vietnamese LLM responses",
+        version="1.0.0",
+    )
+
+    class PredictionRequest(BaseModel):
+        context: str = Field(..., description="Background context", min_length=1)
+        prompt: str = Field(..., description="Question/prompt", min_length=1)
+        response: str = Field(..., description="Model response to evaluate", min_length=1)
+        prompt_type: Optional[str] = Field(None, description="Prompt type: factual, noisy, adversarial")
+        return_probabilities: bool = Field(True, description="Return probability scores")
+
+        class Config:
+            json_schema_extra = {
+                "example": {
+                    "context": "Hà Nội là thủ đô của Việt Nam từ năm 1010. Thành phố có diện tích 3.344 km².",
+                    "prompt": "Thủ đô của Việt Nam là gì?",
+                    "response": "Thủ đô của Việt Nam là Hà Nội.",
+                    "prompt_type": "factual",
+                    "return_probabilities": True,
+                }
+            }
+
+    class PredictionResponse(BaseModel):
+        label: str
+        label_id: int
+        confidence: Optional[float] = None
+        probabilities: Optional[Dict[str, float]] = None
+        processing_time: float
+        explanation: str
+
+    @web_app.get("/")
+    async def root():
+        """Root endpoint"""
+        return {
+            "service": "Vietnamese Hallucination Detection",
+            "version": "1.0.0",
+        }
+else:
+    web_app = None
 
 # ==============================================================================
 # MODAL SETUP
@@ -124,19 +243,42 @@ except Exception:
 ARTIFACT_VOLUME = Volume.from_name("vihallu-artifacts", create_if_missing=False)
 HF_CACHE = Volume.from_name("hf-cache", create_if_missing=True)
 
+src_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "src"))
+
 image = (
     Image.from_registry("nvidia/cuda:12.1.1-devel-ubuntu22.04", add_python="3.10")
     .apt_install("git")
     .pip_install(
-        "torch", "torchvision", "torchaudio", 
+        "torch==2.5.1",
+        "torchvision==0.20.1",
+        "torchaudio==2.5.1",
         index_url="https://download.pytorch.org/whl/cu121",
     )
     .pip_install(
-        "transformers==4.43.3", "accelerate==0.30.1", "peft==0.11.1", 
-        "bitsandbytes==0.43.1", "tokenizers==0.19.1", "numpy==1.25.2",
-        "sentencepiece==0.1.99", "protobuf==3.20.3", "safetensors",
-        "fastapi==0.109.0", "pydantic==2.5.3"
+        # Core ML/HF stack from the working training app
+        "transformers==4.43.3",
+        "accelerate==0.30.1",
+        "peft==0.11.1",
+        "bitsandbytes==0.43.1",
+        "datasets==2.19.1",
+        "tokenizers==0.19.1",
+        "safetensors==0.4.3",
+        "huggingface-hub==0.36.0",
+        # Data stack from training app
+        "numpy==1.25.2",
+        "pandas==2.0.3",
+        "scikit-learn==1.3.0",
+        # App-specific deps
+        "fastapi==0.109.0",
+        "pydantic==2.5.3",
+        "requests==2.32.3",
+        "streamlit==1.35.0",
+        "modal==1.1.4",
+        # Common/other
+        "sentencepiece==0.1.99",
+        "protobuf==3.20.3",
     )
+    .add_local_dir(src_path, remote_path="/src", copy=True)
 )
 
 LABEL2ID = {"no": 0, "intrinsic": 1, "extrinsic": 2}
@@ -151,7 +293,6 @@ ID2LABEL = {v: k for k, v in LABEL2ID.items()}
     timeout=3600,
     volumes={"/outputs": ARTIFACT_VOLUME, "/root/.cache/huggingface": HF_CACHE},
     secrets=[HF_SECRET] if HF_SECRET else [],
-    scaledown_window=300,  # Keep warm for 5 minutes
 )
 class HallucinationDetector:
     """Modal class for hallucination detection inference"""
@@ -159,10 +300,14 @@ class HallucinationDetector:
     @enter()
     def _setup(self):
         """Load model from checkpoint"""
+        import sys
+        sys.path.insert(0, "/")
+        import torch
         from transformers import (
             AutoTokenizer, AutoConfig, AutoModelForSequenceClassification,
             BitsAndBytesConfig
         )
+        from src.utils import should_trust_remote_code
         from peft import PeftModel, PeftConfig
         
         print("🔄 Loading model from checkpoint...")
@@ -179,7 +324,7 @@ class HallucinationDetector:
             num_labels=3,
             id2label=ID2LABEL,
             label2id=LABEL2ID,
-            trust_remote_code=True,
+            trust_remote_code=should_trust_remote_code(peft_config.base_model_name_or_path),
         )
         
         bnb_cfg = BitsAndBytesConfig(
@@ -193,7 +338,7 @@ class HallucinationDetector:
             peft_config.base_model_name_or_path,
             config=cfg,
             quantization_config=bnb_cfg,
-            trust_remote_code=True,
+            trust_remote_code=should_trust_remote_code(peft_config.base_model_name_or_path),
             device_map="auto",
             low_cpu_mem_usage=True,
             torch_dtype=torch.float16,
@@ -204,7 +349,13 @@ class HallucinationDetector:
         self.model.eval()
         
         # Load tokenizer
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        # Tokenizer is loaded from the checkpoint path; trust_remote_code is
+        # gated by the base model id (not the local path) to keep behavior
+        # consistent with upstream model provenance decisions.
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_path,
+            trust_remote_code=should_trust_remote_code(peft_config.base_model_name_or_path),
+        )
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
         
@@ -234,6 +385,7 @@ class HallucinationDetector:
         Returns:
             Dictionary with prediction results
         """
+        import torch
         start_time = time.time()
 
         # Build input text
@@ -273,112 +425,109 @@ class HallucinationDetector:
         
         if return_probabilities:
             # Convert logits to probabilities
-            probs = np.exp(logits) / np.exp(logits).sum()
+            from torch.nn.functional import softmax
+            probs = softmax(torch.from_numpy(logits), dim=-1).numpy()
             result["probabilities"] = {
                 "no": float(probs[0]),
                 "intrinsic": float(probs[1]),
                 "extrinsic": float(probs[2])
             }
-            result["confidence"] = float(probs[pred_id])
-        
+            result["confidence"] = float(probs[pred_id])        
         return result
 
 # ==============================================================================
 # WEB ENDPOINTS
 # ==============================================================================
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+if HAS_FASTAPI:
+    web_app = FastAPI(
+        title="Vietnamese Hallucination Detection API",
+        description="Detect hallucinations in Vietnamese LLM responses",
+        version="1.0.0",
+    )
 
-web_app = FastAPI(
-    title="Vietnamese Hallucination Detection API",
-    description="Detect hallucinations in Vietnamese LLM responses",
-    version="1.0.0"
-)
+    class PredictionRequest(BaseModel):
+        context: str = Field(..., description="Background context", min_length=1)
+        prompt: str = Field(..., description="Question/prompt", min_length=1)
+        response: str = Field(..., description="Model response to evaluate", min_length=1)
+        prompt_type: Optional[str] = Field(None, description="Prompt type: factual, noisy, adversarial")
+        return_probabilities: bool = Field(True, description="Return probability scores")
 
-class PredictionRequest(BaseModel):
-    context: str = Field(..., description="Background context", min_length=1)
-    prompt: str = Field(..., description="Question/prompt", min_length=1)
-    response: str = Field(..., description="Model response to evaluate", min_length=1)
-    prompt_type: Optional[str] = Field(None, description="Prompt type: factual, noisy, adversarial")
-    return_probabilities: bool = Field(True, description="Return probability scores")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "context": "Hà Nội là thủ đô của Việt Nam từ năm 1010. Thành phố có diện tích 3.344 km².",
-                "prompt": "Thủ đô của Việt Nam là gì?",
-                "response": "Thủ đô của Việt Nam là Hà Nội.",
-                "prompt_type": "factual",
-                "return_probabilities": True
+        class Config:
+            json_schema_extra = {
+                "example": {
+                    "context": "Hà Nội là thủ đô của Việt Nam từ năm 1010. Thành phố có diện tích 3.344 km².",
+                    "prompt": "Thủ đô của Việt Nam là gì?",
+                    "response": "Thủ đô của Việt Nam là Hà Nội.",
+                    "prompt_type": "factual",
+                    "return_probabilities": True,
+                }
+            }
+
+    class PredictionResponse(BaseModel):
+        label: str
+        label_id: int
+        confidence: Optional[float] = None
+        probabilities: Optional[Dict[str, float]] = None
+        processing_time: float
+        explanation: str
+
+    @web_app.get("/")
+    async def root():
+        """Root endpoint"""
+        return {
+            "service": "Vietnamese Hallucination Detection",
+            "version": "1.0.0",
+            "model": "VinAllama-7B-LoRA",
+            "endpoints": {
+                "predict": "/predict",
+                "health": "/health",
+                "docs": "/docs"
             }
         }
 
-class PredictionResponse(BaseModel):
-    label: str
-    label_id: int
-    confidence: Optional[float] = None
-    probabilities: Optional[Dict[str, float]] = None
-    processing_time: float
-    explanation: str
-
-@web_app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "service": "Vietnamese Hallucination Detection",
-        "version": "1.0.0",
-        "model": "VinAllama-7B-LoRA",
-        "endpoints": {
-            "predict": "/predict",
-            "health": "/health",
-            "docs": "/docs"
+    @web_app.get("/health")
+    async def health():
+        """Health check endpoint"""
+        return {
+            "status": "healthy",
+            "service": "hallucination-detector",
+            "model_loaded": True
         }
-    }
 
-@web_app.get("/health")
-async def health():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "service": "hallucination-detector",
-        "model_loaded": True
-    }
-
-@web_app.post("/predict", response_model=PredictionResponse)
-async def predict_endpoint(request: PredictionRequest):
-    """
-    Predict hallucination label
-    
-    Returns:
-    - no: No hallucination (response is consistent with context)
-    - intrinsic: Intrinsic hallucination (response contradicts context)
-    - extrinsic: Extrinsic hallucination (response adds info not in context)
-    """
-    try:
-        # Call Modal function
-        detector = HallucinationDetector()
-        result = detector.predict.remote(
-            context=request.context,
-            prompt=request.prompt,
-            response=request.response,
-            prompt_type=request.prompt_type,
-            return_probabilities=request.return_probabilities
-        )
+    @web_app.post("/predict", response_model=PredictionResponse)
+    async def predict_endpoint(request: PredictionRequest):
+        """
+        Predict hallucination label
         
-        # Add explanation
-        explanations = {
-            "no": "✅ Không phát hiện ảo giác (hallucination). Câu trả lời nhất quán với ngữ cảnh.",
-            "intrinsic": "⚠️ Phát hiện ảo giác nội tại (intrinsic). Câu trả lời mâu thuẫn với ngữ cảnh.",
-            "extrinsic": "⚠️ Phát hiện ảo giác ngoại tại (extrinsic). Câu trả lời chứa thông tin không có trong ngữ cảnh."
-        }
-        
-        result["explanation"] = explanations.get(result["label"], "")
-        
-        return result
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        Returns:
+        - no: No hallucination (response is consistent with context)
+        - intrinsic: Intrinsic hallucination (response contradicts context)
+        - extrinsic: Extrinsic hallucination (response adds info not in context)
+        """
+        try:
+            # Call Modal function
+            detector = HallucinationDetector()
+            result = detector.predict.remote(
+                context=request.context,
+                prompt=request.prompt,
+                response=request.response,
+                prompt_type=request.prompt_type,
+                return_probabilities=request.return_probabilities
+            )
+            
+            # Add explanation
+            explanations = {
+                "no": "✅ Không phát hiện ảo giác (hallucination). Câu trả lời nhất quán với ngữ cảnh.",
+                "intrinsic": "⚠️ Phát hiện ảo giác nội tại (intrinsic). Câu trả lời mâu thuẫn với ngữ cảnh.",
+                "extrinsic": "⚠️ Phát hiện ảo giác ngoại tại (extrinsic). Câu trả lời chứa thông tin không có trong ngữ cảnh."
+            }
+            
+            result["explanation"] = explanations.get(result["label"], "")
+            
+            return result
+            
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=str(e))
 
 @app.function(image=image)
 @asgi_app()

@@ -3,6 +3,8 @@ Utility functions for data analysis, visualization, and advanced metrics
 """
 import numpy as np
 import pandas as pd
+import os
+import warnings
 from typing import Dict, List, Tuple
 from sklearn.metrics import (
     confusion_matrix, classification_report,
@@ -233,6 +235,8 @@ def print_error_analysis(errors: Dict, label_names: List[str] = None):
     print("="*70 + "\n")
 
 
+from scipy.special import softmax
+
 def analyze_prediction_confidence(logits: np.ndarray, threshold: float = 0.8) -> Dict:
     """
     Analyze model confidence in predictions
@@ -244,7 +248,7 @@ def analyze_prediction_confidence(logits: np.ndarray, threshold: float = 0.8) ->
     Returns statistics about prediction confidence
     """
 
-    probs = np.exp(logits) / np.exp(logits).sum(axis=1, keepdims=True)
+    probs = softmax(logits, axis=1)
     max_probs = probs.max(axis=1)
 
     stats = {
@@ -314,3 +318,45 @@ def save_evaluation_results(
             f.write(classification_report(true_labels, predictions))
 
     print(f"\nâœ… Evaluation results saved to: {output_path}")
+
+
+def should_trust_remote_code(model_id: str) -> bool:
+    """
+    Decide whether to enable `trust_remote_code` for a given model identifier.
+
+    Controls (environment variables):
+      - ALLOW_TRUST_REMOTE_CODE: set to true/1 to allow enabling the flag (default: false)
+      - TRUSTED_MODELS: optional comma-separated list of model id prefixes allowed when ALLOW_TRUST_REMOTE_CODE is true
+
+    Rationale:
+      `trust_remote_code=True` causes Transformers to execute model-specific code
+      from the downloaded repository. This can run arbitrary Python and is a
+      security risk if model sources are untrusted. Make enabling explicit and
+      auditable via env vars.
+    """
+
+    if not model_id:
+        return False
+
+    allow = os.getenv("ALLOW_TRUST_REMOTE_CODE", "false").lower() in ("1", "true", "yes", "on")
+    if not allow:
+        return False
+
+    trusted_models = os.getenv("TRUSTED_MODELS", "").strip()
+    if trusted_models:
+        prefixes = [p.strip() for p in trusted_models.split(",") if p.strip()]
+        for p in prefixes:
+            if model_id.startswith(p):
+                # allowed for this specific model prefix
+                warnings.warn(f"Enabling trust_remote_code for model '{model_id}' (matched prefix '{p}'). Ensure this model is audited.", stacklevel=2)
+                return True
+        # ALLOW set but no matching prefix
+        warnings.warn(
+            f"ALLOW_TRUST_REMOTE_CODE=True but '{model_id}' is not listed in TRUSTED_MODELS; refusing to enable trust_remote_code.",
+            stacklevel=2,
+        )
+        return False
+
+    # No whitelist provided; allow because ALLOW_TRUST_REMOTE_CODE explicitly enabled
+    warnings.warn(f"Enabling trust_remote_code for model '{model_id}' because ALLOW_TRUST_REMOTE_CODE=True (no TRUSTED_MODELS whitelist).", stacklevel=2)
+    return True

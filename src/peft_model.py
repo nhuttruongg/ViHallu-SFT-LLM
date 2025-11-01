@@ -18,6 +18,7 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, Ta
 from sklearn.utils.class_weight import compute_class_weight
 from src.config import Config
 from src.preprocessing import build_text, normalize_light_vi
+from src.utils import should_trust_remote_code
 
 LABEL2ID = {"no": 0, "intrinsic": 1, "extrinsic": 2}
 ID2LABEL = {v: k for k, v in LABEL2ID.items()}
@@ -126,7 +127,7 @@ def build_datasets(train_df: pd.DataFrame, val_df: pd.DataFrame, C: Config):
     tok = AutoTokenizer.from_pretrained(
         C.effective_tokenizer_id,
         use_fast=True,
-        trust_remote_code=True
+        trust_remote_code=should_trust_remote_code(C.effective_tokenizer_id)
     )
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
@@ -193,7 +194,7 @@ def get_trainer(train_ds, val_ds, tok, C: Config):
         num_labels=C.num_labels,
         id2label=ID2LABEL,
         label2id=LABEL2ID,
-        trust_remote_code=True,
+        trust_remote_code=should_trust_remote_code(C.model_id),
     )
 
     bnb_cfg = BitsAndBytesConfig(
@@ -207,7 +208,7 @@ def get_trainer(train_ds, val_ds, tok, C: Config):
         C.model_id,
         config=cfg,
         quantization_config=bnb_cfg,
-        trust_remote_code=True,
+        trust_remote_code=should_trust_remote_code(C.model_id),
         device_map="auto",
         low_cpu_mem_usage=True,
         torch_dtype=torch.bfloat16 if C.bf16 else torch.float16,

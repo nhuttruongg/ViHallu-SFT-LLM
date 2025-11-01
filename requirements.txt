@@ -1,18 +1,31 @@
-torch
-torchvision
-torchaudio
-transformers
-accelerate
-peft
-bitsandbytes
-datasets
-tokenizers   
-numpy        
-pandas
-scikit-learn
-tqdm
-sentencepiece
-protobuf    
-safetensors
-modal
-modal-client
+# Torch
+torch==2.5.1
+torchvision==0.20.1
+torchaudio==2.5.1
+
+# HuggingFace & PEFT
+transformers==4.43.3
+accelerate==0.30.1
+peft==0.11.1
+bitsandbytes==0.43.1
+datasets==4.3.0
+tokenizers==0.19.1
+sentencepiece==0.1.99
+safetensors==0.6.2
+
+# Data & ML
+numpy==1.25.2
+pandas==2.0.3
+scikit-learn==1.7.2
+tqdm==4.67.1
+
+# Web & API
+modal==1.1.4
+
+# Other
+protobuf==3.20.3
+
+# LATEST modal with STABLE click/typer
+typer==0.9.0
+click==8.1.7
+scipy==1.11.3

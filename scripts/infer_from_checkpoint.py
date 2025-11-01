@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from src.config import Config
 from src.preprocessing import normalize_light_vi, build_text
+from src.utils import should_trust_remote_code
 
 LABEL2ID = {"no": 0, "intrinsic": 1, "extrinsic": 2}
 ID2LABEL = {v: k for k, v in LABEL2ID.items()}
@@ -39,7 +40,7 @@ def load_peft_model_for_inference(base_model_id: str, peft_checkpoint_dir: str):
         num_labels=3,
         id2label=ID2LABEL,
         label2id=LABEL2ID,
-        trust_remote_code=True,
+        trust_remote_code=should_trust_remote_code(base_model_id),
     )
 
     base_model = AutoModelForSequenceClassification.from_pretrained(
@@ -47,7 +48,7 @@ def load_peft_model_for_inference(base_model_id: str, peft_checkpoint_dir: str):
         config=cfg,
         torch_dtype=torch.float16,
         device_map="auto",
-        trust_remote_code=True,
+        trust_remote_code=should_trust_remote_code(base_model_id),
         quantization_config=bnb_cfg,
         low_cpu_mem_usage=True,
     )
@@ -55,15 +56,24 @@ def load_peft_model_for_inference(base_model_id: str, peft_checkpoint_dir: str):
     model = PeftModel.from_pretrained(base_model, peft_checkpoint_dir)
     model.eval()
 
-    tokenizer = AutoTokenizer.from_pretrained(
-        peft_checkpoint_dir,
-        use_fast=True,
-        trust_remote_code=True
-    )
+    try:
+        tokenizer = AutoTokenizer.from_pretrained(
+            peft_checkpoint_dir,
+            use_fast=True,
+            trust_remote_code=should_trust_remote_code(base_model_id),
+        )
+    except Exception:
+        print(f"   Tokenizer not found in checkpoint, loading from base model")
+        tokenizer = AutoTokenizer.from_pretrained(
+            base_model_id,
+            use_fast=True,
+            trust_remote_code=should_trust_remote_code(base_model_id),
+        )
+
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    print(f"âœ… Model loaded successfully")
+    print(f"Model loaded successfully")
     print(f"   Device: {model.device}")
     print(f"   Dtype: {model.dtype}")
 
@@ -125,7 +135,8 @@ def save_predictions_to_csv(
 
     submission.to_csv(output_path, index=False, encoding="utf-8")
 
-    print(f"\nâœ… Predictions saved to: {output_path}")
+    # Use ASCII-safe marker to avoid encoding issues in terminals/environments
+    print(f"\nPredictions saved to: {output_path}")
     print(f"   Total samples: {len(submission)}")
 
     print("\nPrediction distribution:")
@@ -213,9 +224,14 @@ def main():
     if logits.ndim == 2 and logits.shape[1] == 3:
         pred_ids = logits.argmax(axis=1)
     else:
-
-        print(f" Unexpected logits shape: {logits.shape}")
-        pred_ids = (1 / (1 + np.exp(-logits.reshape(-1))) >= 0.5).astype(int)
+        # Fail fast: do not attempt a fallback binary threshold when logits
+        # dimensions are unexpected (e.g., not (N, 3)). Such a fallback could
+        # silently produce incorrect predictions. Raise an explicit error so
+        # the caller can diagnose and fix the model/output shape.
+        raise ValueError(
+            f"Unexpected logits shape: {logits.shape}. "
+            "Expected a 2D array with shape (num_samples, 3)."
+        )
 
     save_predictions_to_csv(
         OUT_NAME,

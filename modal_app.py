@@ -170,36 +170,157 @@ def add_prompt_type_tag(prompt: str, prompt_type: Optional[str]) -> str:
     return prompt
 
 def build_text(context: str, prompt: str, response: str, prompt_type: Optional[str] = None, k_sent: int = 10, use_prompt_type_tag: bool = True, use_keywords: bool = True) -> str:
+
     context = normalize_light_vi(context)
+
     prompt = normalize_light_vi(prompt)
+
     response = normalize_light_vi(response)
+
     query = f"{prompt} {response}"
+
     selected_context = select_sentences_mmr(context, query, k=k_sent)
+
     sections = [f"[CONTEXT]\n{selected_context}"]
+
     if use_keywords:
+
         keywords = extract_keywords(selected_context, top_k=5)
+
         if keywords:
+
             sections.append(f"[KEYWORDS]\n{', '.join(keywords)}")
+
     if use_prompt_type_tag and prompt_type:
+
         prompt = add_prompt_type_tag(prompt, prompt_type)
+
     sections.append(f"[QUESTION]\n{prompt}")
+
     sections.append(f"[RESPONSE]\n{response}")
+
     return "\n\n".join(sections)
 
+
+
 # #############################################################################
+
+# COPIED FROM: src/utils.py
+
+# #############################################################################
+
+import warnings
+
+def should_trust_remote_code(model_id: str) -> bool:
+
+    """
+
+    Decide whether to enable `trust_remote_code` for a given model identifier.
+
+
+
+    Controls (environment variables):
+
+      - ALLOW_TRUST_REMOTE_CODE: set to true/1 to allow enabling the flag (default: false)
+
+      - TRUSTED_MODELS: optional comma-separated list of model id prefixes allowed when ALLOW_TRUST_REMOTE_CODE is true
+
+
+
+    Rationale:
+
+      `trust_remote_code=True` causes Transformers to execute model-specific code
+
+      from the downloaded repository. This can run arbitrary Python and is a
+
+      security risk if model sources are untrusted. Make enabling explicit and
+
+      auditable via env vars.
+
+    """
+
+
+
+    if not model_id:
+
+        return False
+
+
+
+    allow = os.getenv("ALLOW_TRUST_REMOTE_CODE", "false").lower() in ("1", "true", "yes", "on")
+
+    if not allow:
+
+        return False
+
+
+
+    trusted_models = os.getenv("TRUSTED_MODELS", "").strip()
+
+    if trusted_models:
+
+        prefixes = [p.strip() for p in trusted_models.split(",") if p.strip()]
+
+        for p in prefixes:
+
+            if model_id.startswith(p):
+
+                # allowed for this specific model prefix
+
+                warnings.warn(f"Enabling trust_remote_code for model '{model_id}' (matched prefix '{p}'). Ensure this model is audited.", stacklevel=2)
+
+                return True
+
+        # ALLOW set but no matching prefix
+
+        warnings.warn(
+
+            f"ALLOW_TRUST_REMOTE_CODE=True but '{model_id}' is not listed in TRUSTED_MODELS; refusing to enable trust_remote_code.",
+
+            stacklevel=2,
+
+        )
+
+        return False
+
+
+
+    # No whitelist provided; allow because ALLOW_TRUST_REMOTE_CODE explicitly enabled
+
+    warnings.warn(f"Enabling trust_remote_code for model '{model_id}' because ALLOW_TRUST_REMOTE_CODE=True (no TRUSTED_MODELS whitelist).", stacklevel=2)
+
+    return True
+
+
+
+# #############################################################################
+
 # COPIED FROM: src/peft_model.py and main.py
+
 # #############################################################################
+
 import torch
+
 import torch.nn as nn
+
 from sklearn.model_selection import StratifiedShuffleSplit
+
 from sklearn.metrics import f1_score, accuracy_score, precision_score, recall_score, classification_report, confusion_matrix
+
 from sklearn.utils.class_weight import compute_class_weight
+
 from datasets import Dataset
+
 from transformers import (
+
     AutoTokenizer, AutoConfig, AutoModelForSequenceClassification,
+
     BitsAndBytesConfig, TrainingArguments, Trainer, DataCollatorWithPadding,
+
     EarlyStoppingCallback
+
 )
+
 from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType, PeftModel, PeftConfig
 
 LABEL2ID = {"no": 0, "intrinsic": 1, "extrinsic": 2}
@@ -252,7 +373,11 @@ def build_datasets(train_df: pd.DataFrame, val_df: pd.DataFrame, C: Config):
     if C.use_class_weights:
         class_weights = compute_class_weight('balanced', classes=np.array([0, 1, 2]), y=train_df["labels"].values)
         C.class_weights = class_weights.tolist()
-    tok = AutoTokenizer.from_pretrained(C.effective_tokenizer_id, use_fast=True, trust_remote_code=True)
+    tok = AutoTokenizer.from_pretrained(
+        C.effective_tokenizer_id,
+        use_fast=True,
+        trust_remote_code=should_trust_remote_code(C.effective_tokenizer_id),
+    )
     if tok.pad_token is None: tok.pad_token = tok.eos_token
     def tokenize_function(batch):
         return tok(batch[C.text_column], max_length=C.max_length, truncation=True, padding=False)
@@ -283,14 +408,25 @@ class WeightedLossTrainer(Trainer):
         return (loss, outputs) if return_outputs else loss
 
 def get_trainer(train_ds, val_ds, tok, C: Config):
-    cfg = AutoConfig.from_pretrained(C.model_id, num_labels=C.num_labels, id2label=ID2LABEL, label2id=LABEL2ID, trust_remote_code=True)
+    cfg = AutoConfig.from_pretrained(
+        C.model_id,
+        num_labels=C.num_labels,
+        id2label=ID2LABEL,
+        label2id=LABEL2ID,
+        trust_remote_code=should_trust_remote_code(C.model_id),
+    )
     bnb_cfg = BitsAndBytesConfig(
         load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
         bnb_4bit_compute_dtype=torch.bfloat16 if C.bf16 else torch.float16,
     )
     model = AutoModelForSequenceClassification.from_pretrained(
-        C.model_id, config=cfg, quantization_config=bnb_cfg, trust_remote_code=True,
-        device_map="auto", low_cpu_mem_usage=True, torch_dtype=torch.bfloat16 if C.bf16 else torch.float16,
+        C.model_id,
+        config=cfg,
+        quantization_config=bnb_cfg,
+        trust_remote_code=should_trust_remote_code(C.model_id),
+        device_map="auto",
+        low_cpu_mem_usage=True,
+        torch_dtype=torch.bfloat16 if C.bf16 else torch.float16,
     )
     if C.gradient_checkpointing: model.gradient_checkpointing_enable()
     model = prepare_model_for_kbit_training(model)
@@ -449,7 +585,13 @@ def predict():
     peft_config = PeftConfig.from_pretrained(C.output_dir)
 
     # Load the base model
-    cfg = AutoConfig.from_pretrained(peft_config.base_model_name_or_path, num_labels=C.num_labels, id2label=ID2LABEL, label2id=LABEL2ID, trust_remote_code=True)
+    cfg = AutoConfig.from_pretrained(
+        peft_config.base_model_name_or_path,
+        num_labels=C.num_labels,
+        id2label=ID2LABEL,
+        label2id=LABEL2ID,
+        trust_remote_code=should_trust_remote_code(peft_config.base_model_name_or_path),
+    )
     bnb_cfg = BitsAndBytesConfig(
         load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True,
         bnb_4bit_compute_dtype=torch.bfloat16 if C.bf16 else torch.float16,
@@ -458,7 +600,7 @@ def predict():
         peft_config.base_model_name_or_path,
         config=cfg,
         quantization_config=bnb_cfg,
-        trust_remote_code=True,
+        trust_remote_code=should_trust_remote_code(peft_config.base_model_name_or_path),
         device_map="auto",
         low_cpu_mem_usage=True,
         torch_dtype=torch.bfloat16 if C.bf16 else torch.float16,
